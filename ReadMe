@@ -1,0 +1,35 @@
+Description:
+
+This repository contains the implementation of machine learning models for cylinder pressure estimation in diesel engines using newly developed biodiesel-fusel oil mixtures. The models included are Deep Multi-Layer Perceptron (Deep-MLP), Random Forest Regression (RFR), and Decision Tree Regression (DTR). The goal of this work is to predict engine cylinder pressure based on various input features related to fuel composition, engine parameters, and other relevant metrics. The results show the performance of each model in both training and testing phases across different fuel types.
+
+Feel free to clone this repository and explore the code. The provided models and code can be utilized to predict cylinder pressures in various engine configurations.
+
+Cite this work: Karaoglan, K. M., Çiftçi, B., Karagöz, M., & Çelik, M. B. (Year). Machine Learning-Based Cylinder Pressure Estimation Using Newly Developed Biodiesel-Fusel Oil Mixtures in Diesel Engines. Journal Name, Volume(Issue), Page Range. DOI: 10.xxxx/journalname.
+
+
+# Machine Learning-Based Cylinder Pressure Estimation Using Newly Developed Biodiesel-Fusel Oil Mixtures in Diesel Engines
+
+## Authors
+- **Kursat Mustafa Karaoglan**  
+  Department of Computer Engineering, Faculty of Engineering, Karabuk University  
+  Email: [kkaraoglan@karabuk.edu.tr](mailto:kkaraoglan@karabuk.edu.tr)
+
+- **Burak Çiftçi**  
+  Department of Mechanical Engineering, Graduate Education Institute, Karabuk University  
+  Email: [burakciftci@karabuk.edu.tr](mailto:burakciftci@karabuk.edu.tr)
+
+- **Mustafa Karagöz**  
+  Department of Motor Vehicles and Transportation Technologies, TOBB Vocational School of Technical Sciences, Karabuk University  
+  Email: [mustafakaragoz@karabuk.edu.tr](mailto:mustafakaragoz@karabuk.edu.tr)
+
+- **Mustafa Bahattin Çelik**  
+  Department of Mechanical Engineering, Faculty of Engineering, Karabuk University  
+  Email: [mcelik@karabuk.edu.tr](mailto:mcelik@karabuk.edu.tr)
+
+## Overview
+This repository contains the code and models used in the research paper **"Machine Learning-Based Cylinder Pressure Estimation Using Newly Developed Biodiesel-Fusel Oil Mixtures in Diesel Engines."** The study focuses on the development of a machine learning-based approach to estimate cylinder pressure in diesel engines using biodiesel-fusel oil mixtures. The models explored include **Deep-MLP**, **RFR**, and **DTR**, evaluated on various performance metrics such as R², RMSE, MAE, and MAPE.
+
+### Key Features
+- **ML Models**: Detailed implementation of the Deep-MLP, RFR, and DTR models.
+- **Performance Metrics**: R², RMSE, MAE, and MAPE for both training and testing phases.
+- **Data**: Datasets used in the study for training and testing the models.
