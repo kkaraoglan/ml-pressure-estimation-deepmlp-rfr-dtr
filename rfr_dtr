@@ -1,0 +1,539 @@
+"""
+Tree-Based Regression Models for Wear Loss Prediction
+"""
+import logging
+import warnings
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional, Any
+
+import numpy as np
+import pandas as pd
+from sklearn.base import BaseEstimator
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+from sklearn.model_selection import KFold
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+import matplotlib.pyplot as plt
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+warnings.filterwarnings('ignore')
+#DF, WC030, WCO30F5, WCO30F10, WCO50, WCO50F5, WCO50F10
+str_File_Name="WCO50F10"
+class ScalingMethod(Enum):
+    NONE = "none"
+
+    def __str__(self):
+        return self.value
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+
+    Parameters
+    ----------
+    n_splits : int
+        Number of splits for cross-validation
+    random_state : int
+        Random seed for reproducibility
+    scaling_method : ScalingMethod
+        Method to scale the input features
+    dt_params : Dict[str, Any]
+        Parameters for Decision Tree model
+    rf_params : Dict[str, Any]
+        Parameters for Random Forest model
+    """
+    n_splits: int
+    random_state: int
+    scaling_method: ScalingMethod
+    dt_params: Dict[str, Any]
+    rf_params: Dict[str, Any]
+
+    def __post_init__(self):
+        """Validate configuration parameters"""
+        if not isinstance(self.n_splits, int) or self.n_splits < 2:
+            raise ValueError("n_splits must be an integer >= 2")
+        if not isinstance(self.random_state, int):
+            raise ValueError("random_state must be an integer")
+
+
+class MetricsCalculator:
+
+    @staticmethod
+    def calculate_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+        """Calculate regression performance metrics
+
+        Parameters
+        ----------
+        y_true : np.ndarray
+            Ground truth target values
+        y_pred : np.ndarray
+            Predicted target values
+
+        Returns
+        -------
+        Dict[str, float]
+            Dictionary containing R², RMSE, MAE, and MAPE metrics
+
+        Raises
+        ------
+        ValueError
+            If inputs have mismatched lengths or contain NaN values
+        """
+        if len(y_true) != len(y_pred):
+            raise ValueError("Length mismatch between y_true and y_pred")
+        if np.any(np.isnan(y_true)) or np.any(np.isnan(y_pred)):
+            raise ValueError("Input contains NaN values")
+
+        mape = np.mean(np.abs((y_true - y_pred) / np.maximum(1e-10, np.abs(y_true)))) * 100
+
+        return {
+            'R²': float(r2_score(y_true, y_pred)),
+            'RMSE': float(np.sqrt(mean_squared_error(y_true, y_pred))),
+            'MAE': float(mean_absolute_error(y_true, y_pred)),
+            'MAPE': float(mape)
+        }
+
+
+class DataProcessor:
+    def __init__(self, scaling_method: ScalingMethod):
+        self.scaling_method = scaling_method
+        self.scaler = self._get_scaler()
+        self.feature_names: List[str] = []
+        self._is_fitted = False
+
+    def _get_scaler(self) -> Optional[BaseEstimator]:
+        return None
+
+    def load_and_preprocess(self, file_path: Path) -> Tuple[pd.DataFrame, pd.Series]:
+
+        Parameters
+        ----------
+        file_path : Path
+            Path to the Excel file
+
+        Returns
+        -------
+        Tuple[pd.DataFrame, pd.Series]
+            Preprocessed features and target variable
+        """
+        try:
+            if not file_path.exists():
+                raise FileNotFoundError(f"File not found: {file_path}")
+
+            logger.info(f"Loading data from {file_path}")
+            df = pd.read_excel(file_path)
+
+            self._validate_data(df)
+
+            # Split features and target
+            X = df.iloc[:, :-1]  # Tüm sütunlar son sütun hariç
+            y = df.iloc[:, -1]  # Son sütun
+
+            self.feature_names = X.columns.tolist()
+            X_processed = self._scale_features(X)
+
+            logger.info("Data preprocessing completed successfully")
+            return X_processed, y
+
+        except Exception as e:
+            logger.error(f"Error in data processing: {str(e)}")
+            raise
+
+
+    def _validate_data(self, df: pd.DataFrame) -> None:
+        if df.empty:
+            raise ValueError("Empty dataset")
+        if df.shape[1] < 5:
+            raise ValueError(f"Dataset must have at least 5 columns, found {df.shape[1]}")
+        if df.isnull().any().any():
+            raise ValueError("Dataset contains missing values")
+        if not all(df.dtypes.apply(lambda x: np.issubdtype(x, np.number))):
+            raise ValueError("All columns must be numeric")
+
+    def _scale_features(self, X: pd.DataFrame) -> pd.DataFrame:
+        if self.scaler is None:
+            return X.copy()
+
+        try:
+            if not self._is_fitted:
+                X_scaled = pd.DataFrame(
+                    self.scaler.fit_transform(X),
+                    columns=X.columns,
+                    index=X.index
+                )
+                self._is_fitted = True
+            else:
+                X_scaled = pd.DataFrame(
+                    self.scaler.transform(X),
+                    columns=X.columns,
+                    index=X.index
+                )
+
+            if X_scaled.isnull().any().any():
+                raise ValueError("Scaling produced NaN values")
+
+            return X_scaled
+
+        except Exception as e:
+            logger.error(f"Error during feature scaling: {str(e)}")
+            raise
+
+
+class TreeBasedPredictor:
+
+    def __init__(self, config: ModelConfig):
+        self.config = config
+        self.data_processor = DataProcessor(config.scaling_method)
+        self.models = self._initialize_models()
+        self.results: Dict[str, Dict] = {}
+
+    def _initialize_models(self) -> Dict[str, BaseEstimator]:
+        return {
+            'Decision Tree': DecisionTreeRegressor(**self.config.dt_params),
+            'Random Forest': RandomForestRegressor(**self.config.rf_params)
+        }
+
+    def train_and_evaluate(self, X: pd.DataFrame, y: pd.Series,
+                           model_name: str, save_dir: Optional[Path] = None):
+
+        # Final train/test split için indeksleri takip etmek üzere dictionary
+        final_predictions = {idx: {'set': None, 'prediction': None} for idx in X.index}
+
+        # Create and fit model
+        if model_name == 'Decision Tree':
+            model = DecisionTreeRegressor(**self.config.dt_params)
+        else:
+            model = RandomForestRegressor(**self.config.rf_params)
+
+        # Tek bir train/test split yap
+        kf = KFold(n_splits=5, shuffle=True, random_state=self.config.random_state)
+        # Sadece ilk split'i kullan
+        train_idx, test_idx = next(kf.split(X))
+
+        # Train ve test setlerini ayır
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+        # Model eğitimi
+        model.fit(X_train, y_train)
+
+        # Tahminler
+        y_train_pred = model.predict(X_train)
+        y_test_pred = model.predict(X_test)
+
+        # Train seti için sonuçları kaydet
+        train_results = pd.DataFrame({
+            'Original_Index': X_train.index,
+            'Set': 'Train',
+            'Actual_Values': y_train.values,
+            'Predicted_Values': y_train_pred,
+            'Error': y_train_pred - y_train.values,
+            'Absolute_Error': np.abs(y_train_pred - y_train.values),
+            'Percentage_Error': np.abs((y_train_pred - y_train.values) / y_train.values) * 100
+        })
+
+        # Test seti için sonuçları kaydet
+        test_results = pd.DataFrame({
+            'Original_Index': X_test.index,
+            'Set': 'Test',
+            'Actual_Values': y_test.values,
+            'Predicted_Values': y_test_pred,
+            'Error': y_test_pred - y_test.values,
+            'Absolute_Error': np.abs(y_test_pred - y_test.values),
+            'Percentage_Error': np.abs((y_test_pred - y_test.values) / y_test.values) * 100
+        })
+
+        for col in X.columns:
+            train_results[f'Original_{col}'] = [X.loc[idx, col] for idx in train_results['Original_Index']]
+            test_results[f'Original_{col}'] = [X.loc[idx, col] for idx in test_results['Original_Index']]
+
+        all_results = pd.concat([train_results, test_results])
+        all_results = all_results.sort_values('Original_Index')
+
+        safe_model_name = model_name.lower().replace(" ", "_")
+        results_filename = f'{str_File_Name}_{safe_model_name}_model_predictions.xlsx'
+
+        try:
+            with pd.ExcelWriter(results_filename) as writer:
+                train_results.to_excel(writer, sheet_name='Training Results', index=False)
+                test_results.to_excel(writer, sheet_name='Test Results', index=False)
+                all_results.to_excel(writer, sheet_name='All Results', index=False)
+
+                X_with_target = pd.concat([X, y], axis=1)
+                X_with_target.to_excel(writer, sheet_name='Original Dataset', index=True)
+
+                train_metrics = MetricsCalculator.calculate_metrics(train_results['Actual_Values'].values,
+                                                                    train_results['Predicted_Values'].values)
+                test_metrics = MetricsCalculator.calculate_metrics(test_results['Actual_Values'].values,
+                                                                   test_results['Predicted_Values'].values)
+
+                performance_metrics = pd.DataFrame({
+                    'Metric': ['R²', 'RMSE', 'MAE', 'MAPE'],
+                    'Training': [train_metrics['R²'], train_metrics['RMSE'],
+                                 train_metrics['MAE'], train_metrics['MAPE']],
+                    'Testing': [test_metrics['R²'], test_metrics['RMSE'],
+                                test_metrics['MAE'], test_metrics['MAPE']]
+                })
+                performance_metrics.to_excel(writer, sheet_name='Performance Metrics', index=False)
+
+                feature_importance = pd.DataFrame({
+                    'Feature': X.columns,
+                    'Importance': model.feature_importances_
+                }).sort_values('Importance', ascending=False)
+                feature_importance.to_excel(writer, sheet_name='Feature Importance', index=False)
+
+        except Exception as e:
+            logger.error(f"Error saving predictions to Excel: {str(e)}")
+
+        self.plot_predictions(y_true=test_results['Actual_Values'].values,
+                              y_pred=test_results['Predicted_Values'].values,
+                              y_train_true=train_results['Actual_Values'].values,
+                              y_train_pred=train_results['Predicted_Values'].values,
+                              model_name=model_name,
+                              metrics=test_metrics,
+                              save_dir=save_dir)
+
+        return train_metrics, test_metrics, model
+
+    def plot_predictions(self, y_true: np.ndarray, y_pred: np.ndarray,
+                         y_train_true: np.ndarray, y_train_pred: np.ndarray,
+                         model_name: str, metrics: Dict[str, float],
+                         save_dir: Optional[Path] = None) -> None:
+        try:
+            plt.figure(figsize=(12, 10))
+            plt.rcParams.update({'font.size': 14})
+
+            plt.scatter(y_train_true, y_train_pred, c='green', alpha=0.7,
+                        label='Training Data', marker='o', s=120)
+
+            plt.scatter(y_true, y_pred, c='blue', alpha=0.7,
+                        label='Test Data', marker='x', s=120)
+
+            min_val = min(min(y_true.min(), y_pred.min()),
+                          min(y_train_true.min(), y_train_pred.min()))
+            max_val = max(max(y_true.max(), y_pred.max()),
+                          max(y_train_true.max(), y_train_pred.max()))
+            plt.plot([min_val, max_val], [min_val, max_val], 'k--',
+                     label='Perfect Prediction', linewidth=2)
+
+            plt.xlabel('Experimental Values', fontsize=17, fontweight='bold', fontname='Arial')
+            plt.ylabel('Predicted Values', fontsize=17, fontweight='bold', fontname='Arial')
+            str_Model="DTR"
+            if str(model_name)=="Random Forest":
+                str_Model="RFR"
+
+            plt.title(f'Experimental - Predicted Values for {str_File_Name} using {str_Model} Model',
+                      fontsize=19, fontweight='bold', fontname='Arial', pad=20)
+
+            plt.xticks(fontsize=14)
+            plt.yticks(fontsize=14)
+
+            metrics_text = (
+                f'R² = {metrics["R²"]:.4f}\n'
+                f'RMSE = {metrics["RMSE"]:.4f}\n'
+                f'MAE = {metrics["MAE"]:.4f}\n'
+                f'MAPE = {metrics["MAPE"]:.2f}%'
+            )
+            plt.text(0.95, 0.05, metrics_text,
+                     transform=plt.gca().transAxes,
+                     verticalalignment='bottom',
+                     horizontalalignment='right',
+                     fontsize=17,
+                     fontweight='bold',
+                     fontname='Arial',
+                     bbox=dict(boxstyle='round',
+                               facecolor='white',
+                               alpha=0.8,
+                               pad=0.8))
+
+            plt.grid(True, linestyle='--', alpha=0.7)
+            plt.legend(fontsize=14, loc='upper left',
+                       frameon=True,
+                       facecolor='white',
+                       edgecolor='gray',
+                       shadow=True)
+            plt.tight_layout()
+
+            if save_dir:
+                save_path = save_dir / f'{str_File_Name} {model_name.lower().replace(" ", "_")}_predictions.png'
+                plt.savefig(save_path, dpi=300, bbox_inches='tight')
+                logger.info(f'Plot saved to {save_path}')
+
+            plt.show()
+            plt.close()
+
+        except Exception as e:
+            logger.error(f"Error in plotting predictions: {str(e)}")
+            raise
+
+    def plot_feature_importance(self, model_name: str, importance: np.ndarray,
+                                save_dir: Optional[Path] = None) -> None:
+        feature_names = self.data_processor.feature_names
+
+        plt.figure(figsize=(10, 6))
+        plt.title(f'Feature Importance - {model_name}', fontsize=14, fontweight='bold')
+
+        indices = np.argsort(importance)[::-1]
+        sorted_features = [feature_names[i] for i in indices]
+        sorted_importance = importance[indices]
+
+        plt.bar(range(len(importance)), sorted_importance)
+        plt.xticks(range(len(importance)), sorted_features, rotation=45, ha='right')
+        plt.xlabel('Features', fontsize=12)
+        plt.ylabel('Importance', fontsize=12)
+        plt.tight_layout()
+
+        if save_dir:
+            save_path = save_dir / f'{str_File_Name} {model_name.lower().replace(" ", "_")}_feature_importance.png'
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            logger.info(f'Feature importance plot saved to {save_path}')
+
+        plt.show()
+        plt.close()
+
+def run_experiment(config: ModelConfig, file_path: Path, save_dir: Path) -> pd.DataFrame:
+    predictor = TreeBasedPredictor(config)
+    results = []
+
+    try:
+        X, y = predictor.data_processor.load_and_preprocess(file_path)
+        logger.info("Data loaded and preprocessed successfully")
+
+        plots_dir = save_dir / 'plots'
+        plots_dir.mkdir(exist_ok=True)
+
+        for model_name in predictor.models.keys():
+            logger.info(f"Training and evaluating {model_name}")
+
+            train_metrics, test_metrics, fitted_model = predictor.train_and_evaluate(
+                X, y, model_name, save_dir=plots_dir)
+
+            predictor.plot_feature_importance(model_name, fitted_model.feature_importances_, plots_dir)
+
+            results.append({
+                'Model': model_name,
+                **{f"Train {k}": v for k, v in train_metrics.items()},
+                **{f"Test {k}": v for k, v in test_metrics.items()}
+            })
+
+            logger.info(f"{model_name} evaluation completed")
+
+        results_df = pd.DataFrame(results)
+
+        return results_df
+
+    except Exception as e:
+        logger.error(f"Error in experiment execution: {str(e)}")
+        raise
+
+def save_results(results_df: pd.DataFrame, save_dir: Path, file_name: str) -> None:
+    Parameters
+    ----------
+    results_df : pd.DataFrame
+        Results to save
+    save_dir : Path
+        Directory to save results
+    file_name : str
+        Base name for the output files
+    """
+    try:
+        # Save to CSV
+        csv_path = save_dir / f"{file_name}_results.csv"
+        results_df.to_csv(csv_path, index=False)
+        logger.info(f"Results saved to {csv_path}")
+
+        # Save to Excel with formatting
+        excel_path = save_dir / f"{file_name}_results.xlsx"
+        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+            results_df.to_excel(writer, index=False, sheet_name='Results')
+
+            # Auto-adjust column widths
+            worksheet = writer.sheets['Results']
+            for idx, col in enumerate(results_df.columns):
+                max_length = max(
+                    results_df[col].astype(str).apply(len).max(),
+                    len(str(col))
+                )
+                worksheet.column_dimensions[chr(65 + idx)].width = max_length + 2
+
+        logger.info(f"Formatted results saved to {excel_path}")
+
+    except Exception as e:
+        logger.error(f"Error saving results: {str(e)}")
+        raise
+
+def main():
+    try:
+        file_name = str_File_Name
+        file_path = Path(f"{file_name}.xlsx")
+        output_dir = Path("results")
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Configure logging to file
+        file_handler = logging.FileHandler(output_dir / f"{file_name}_analysis.log")
+        file_handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        ))
+        logger.addHandler(file_handler)
+
+        logger.info("Starting wear loss analysis with tree-based models")
+
+        config = ModelConfig(
+            n_splits=5,
+            random_state=42,
+            scaling_method=ScalingMethod.NONE,
+            dt_params={
+                'max_depth': 4,  # 3'ten 4'e çıkarıldı
+                'min_samples_split': 8,  # 10'dan 8'e düşürüldü
+                'min_samples_leaf': 3,  # 5'ten 3'e düşürüldü
+                'random_state': 42,
+                'ccp_alpha': 0.01,  # 0.02'den 0.01'e düşürüldü
+                'max_features': 'sqrt',
+                'max_leaf_nodes': None,
+                'min_impurity_decrease': 0.01
+            },
+            rf_params={
+                'n_estimators': 200,  # 300'den 200'e düşürüldü
+                'max_depth': 4,  # 3'ten 4'e çıkarıldı
+                'min_samples_split': 6,  # 10'dan 6'ya düşürüldü
+                'min_samples_leaf': 3,  # 5'ten 3'e düşürüldü
+                'max_features': 'sqrt',
+                'random_state': 42,
+                'oob_score': True,
+                'max_samples': 0.6,  # 0.5'ten 0.6'ya çıkarıldı
+                'ccp_alpha': 0.01,  # 0.02'den 0.01'e düşürüldü
+                'min_impurity_decrease': 0.01,
+                'bootstrap': True,
+                'max_leaf_nodes': None,
+                'warm_start': False
+            }
+
+        )
+        results = run_experiment(config, file_path, output_dir)
+
+        save_results(results, output_dir, file_name)
+
+        print(f"\n {str_File_Name} Model Evaluation Results:")
+        print("=" * 100)
+        print(results.to_string(index=False))
+        print("\nAnalysis completed successfully!")
+
+    except Exception as e:
+        logger.error(f"Error in main execution: {str(e)}")
+        print(f"\nError occurred: {str(e)}")
+        raise
+    finally:
+        logger.removeHandler(file_handler)
+        file_handler.close()
+
+
+if __name__ == "__main__":
+    main()
